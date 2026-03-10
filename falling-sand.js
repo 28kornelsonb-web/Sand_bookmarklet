@@ -121,6 +121,17 @@
                 mouse_x: f32, mouse_y: f32, mouse_dx: f32, mouse_dy: f32,
                 mouse_btn: u32, mouse_radius: f32, brush_value: u32, pad2: u32,
             };
+
+            // Fast random number generator based on coordinates and frame
+            fn hash(state: u32) -> u32 {
+                var x = state;
+                x = x ^ (x >> 16u);
+                x = x * 0x7feb352du;
+                x = x ^ (x >> 15u);
+                x = x * 0x846ca68bu;
+                x = x ^ (x >> 16u);
+                return x;
+            }
         `;
 
         const computeModule = device.createShaderModule({
@@ -135,6 +146,7 @@
                 if (x >= u.width || y >= u.height) { return; }
 
                 let idx = y * u.width + x;
+                let rand = hash(x + y * u.width + u.frame * 12345u) % 100u;
 
                 // --- Interactions ---
                 if (u.mouse_down > 0u) {
@@ -194,29 +206,17 @@
                         }
                     }
 
-                    // Try diagonal sliding (alternate left/right based on frame parity to prevent bias)
-                    let dir = (x + y + u.frame) % 2u;
-
-                    if (dir == 0u && x > 0u) {
-                        let dl_idx = u32(next_y) * u.width + (x - 1u);
-                        if (atomicLoad(&grid[dl_idx]) == 0u) {
-                            if (atomicCompareExchangeWeak(&grid[dl_idx], 0u, val).exchanged) {
-                                atomicStore(&grid[idx], 0u);
-                                moved = true;
-                            }
-                        }
-                    } else if (dir == 1u && x < u.width - 1u) {
-                        let dr_idx = u32(next_y) * u.width + (x + 1u);
-                        if (atomicLoad(&grid[dr_idx]) == 0u) {
-                            if (atomicCompareExchangeWeak(&grid[dr_idx], 0u, val).exchanged) {
-                                atomicStore(&grid[idx], 0u);
-                                moved = true;
-                            }
-                        }
+                    // For Snow, we introduce stickiness to create overhangs
+                    var can_slide = true;
+                    if (mat == 5u && rand > 15u) {
+                        can_slide = false; // Snow only slides diagonally 15% of the time
                     }
 
-                    if (!moved) {
-                        if (dir == 1u && x > 0u) {
+                    if (can_slide) {
+                        // Try diagonal sliding (alternate left/right based on frame parity to prevent bias)
+                        let dir = (x + y + u.frame) % 2u;
+
+                        if (dir == 0u && x > 0u) {
                             let dl_idx = u32(next_y) * u.width + (x - 1u);
                             if (atomicLoad(&grid[dl_idx]) == 0u) {
                                 if (atomicCompareExchangeWeak(&grid[dl_idx], 0u, val).exchanged) {
@@ -224,12 +224,32 @@
                                     moved = true;
                                 }
                             }
-                        } else if (dir == 0u && x < u.width - 1u) {
+                        } else if (dir == 1u && x < u.width - 1u) {
                             let dr_idx = u32(next_y) * u.width + (x + 1u);
                             if (atomicLoad(&grid[dr_idx]) == 0u) {
                                 if (atomicCompareExchangeWeak(&grid[dr_idx], 0u, val).exchanged) {
                                     atomicStore(&grid[idx], 0u);
                                     moved = true;
+                                }
+                            }
+                        }
+
+                        if (!moved) {
+                            if (dir == 1u && x > 0u) {
+                                let dl_idx = u32(next_y) * u.width + (x - 1u);
+                                if (atomicLoad(&grid[dl_idx]) == 0u) {
+                                    if (atomicCompareExchangeWeak(&grid[dl_idx], 0u, val).exchanged) {
+                                        atomicStore(&grid[idx], 0u);
+                                        moved = true;
+                                    }
+                                }
+                            } else if (dir == 0u && x < u.width - 1u) {
+                                let dr_idx = u32(next_y) * u.width + (x + 1u);
+                                if (atomicLoad(&grid[dr_idx]) == 0u) {
+                                    if (atomicCompareExchangeWeak(&grid[dr_idx], 0u, val).exchanged) {
+                                        atomicStore(&grid[idx], 0u);
+                                        moved = true;
+                                    }
                                 }
                             }
                         }
@@ -239,19 +259,36 @@
                 // Horizontal flowing for Water (2) and Smoke (4)
                 if (!moved && (mat == 2u || mat == 4u)) {
                     let dir = (x + y + u.frame) % 2u;
-                    if (dir == 0u && x > 0u) {
-                        let l_idx = y * u.width + (x - 1u);
-                        if (atomicLoad(&grid[l_idx]) == 0u) {
-                            if (atomicCompareExchangeWeak(&grid[l_idx], 0u, val).exchanged) {
-                                atomicStore(&grid[idx], 0u);
-                            }
+                    var spread_max = 1u;
+                    if (mat == 2u) { spread_max = 5u; } // Water flows very quickly
+                    if (mat == 4u) { spread_max = 2u; } // Smoke drifts slightly
+
+                    var target_x = x;
+                    var curr_x = x;
+
+                    // Liquid dispersion loop: look ahead up to 'spread_max' pixels
+                    if (dir == 0u) {
+                        for (var i = 0u; i < 5u; i++) {
+                            if (i >= spread_max) { break; }
+                            if (curr_x > 0u && atomicLoad(&grid[y * u.width + (curr_x - 1u)]) == 0u) {
+                                curr_x = curr_x - 1u;
+                                target_x = curr_x;
+                            } else { break; }
                         }
-                    } else if (dir == 1u && x < u.width - 1u) {
-                        let r_idx = y * u.width + (x + 1u);
-                        if (atomicLoad(&grid[r_idx]) == 0u) {
-                            if (atomicCompareExchangeWeak(&grid[r_idx], 0u, val).exchanged) {
-                                atomicStore(&grid[idx], 0u);
-                            }
+                    } else {
+                        for (var i = 0u; i < 5u; i++) {
+                            if (i >= spread_max) { break; }
+                            if (curr_x + 1u < u.width && atomicLoad(&grid[y * u.width + (curr_x + 1u)]) == 0u) {
+                                curr_x = curr_x + 1u;
+                                target_x = curr_x;
+                            } else { break; }
+                        }
+                    }
+
+                    if (target_x != x) {
+                        let t_idx = y * u.width + target_x;
+                        if (atomicCompareExchangeWeak(&grid[t_idx], 0u, val).exchanged) {
+                            atomicStore(&grid[idx], 0u);
                         }
                     }
                 }
@@ -408,7 +445,8 @@
         const materials = [
             { name: 'Sand', id: 1, hex: '#dcc864' },
             { name: 'Water', id: 2, hex: '#3264ff' },
-            { name: 'Wall', id: 3, hex: '#888888' }, // Changed to lighter grey so it's visible against the void
+            { name: 'Snow', id: 5, hex: '#ffffff' },
+            { name: 'Wall', id: 3, hex: '#888888' }, 
             { name: 'Smoke', id: 4, hex: '#dcdcdc' },
             { name: 'Eraser', id: 0, hex: '#000000' }
         ];
