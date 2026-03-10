@@ -1,10 +1,106 @@
-(async()=>{try{if(!navigator.gpu){alert("WebGPU is not supported in this browser. Please use a compatible browser (like Chrome/Edge) and ensure WebGPU is enabled.");return}let e=await navigator.mediaDevices.getDisplayMedia({video:{preferCurrentTab:!0},audio:!1}),i=document.createElement("video");i.srcObject=e,i.play(),await new Promise(e=>{i.onplaying=e}),await new Promise(e=>setTimeout(e,150));let t=window.innerWidth,r=window.innerHeight,u=document.createElement("canvas");u.width=t,u.height=r;let a=u.getContext("2d",{willReadFrequently:!0});a.drawImage(i,0,0,t,r),e.getTracks().forEach(e=>e.stop());let d=a.getImageData(0,0,t,r),o=new Uint32Array(d.data.buffer);for(let n=0;n<o.length;n++)(o[n]>>24&255)<128&&(o[n]=0);let l=await navigator.gpu.requestAdapter(),s=await l.requestDevice(),$=document.createElement("canvas");$.width=t,$.height=r,$.style.cssText="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999998;pointer-events:auto;user-select:none;touch-action:none;",document.body.appendChild($);let c=$.getContext("webgpu"),g=navigator.gpu.getPreferredCanvasFormat();c.configure({device:s,format:g,alphaMode:"premultiplied"}),Array.from(document.body.children).forEach(e=>{e!==$&&"SCRIPT"!==e.tagName&&(e.style.visibility="hidden",e.style.opacity="0")}),document.body.style.background="#111";let f=s.createBuffer({size:o.byteLength,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});s.queue.writeBuffer(f,0,o);let x=new Float32Array(12),m=new Uint32Array(x.buffer),v=s.createBuffer({size:x.byteLength,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST}),h=`
+/**
+ * Interactive Falling Sand Page Bookmarklet
+ * -----------------------------------------
+ * Captures the DOM visually, converts it to a GPU-simulated sand grid,
+ * and lets you drag and dig through the webpage.
+ * * Tech: html2canvas + WebGPU Compute Shaders
+ */
+(async () => {
+    try {
+        // 1. Check for WebGPU Support
+        if (!navigator.gpu) {
+            alert("WebGPU is not supported in this browser. Please use a compatible browser (like Chrome/Edge) and ensure WebGPU is enabled.");
+            return;
+        }
+
+        // 2. Capture the screen via DisplayMedia API
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+            video: { preferCurrentTab: true },
+            audio: false
+        });
+
+        const video = document.createElement('video');
+        video.srcObject = stream;
+        video.play();
+        
+        // Wait for video stream to start flowing
+        await new Promise(resolve => {
+            video.onplaying = resolve;
+        });
+        // A tiny delay to guarantee the first frame is painted
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        // 3. Extract pixels from the video stream
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        
+        const captureCanvas = document.createElement('canvas');
+        captureCanvas.width = w;
+        captureCanvas.height = h;
+        
+        const ctx2d = captureCanvas.getContext('2d', { willReadFrequently: true });
+        ctx2d.drawImage(video, 0, 0, w, h);
+        
+        // We have our screenshot! Stop the screen sharing stream
+        stream.getTracks().forEach(track => track.stop());
+
+        // 4. Extract Pixels & map Alpha to solid (avoiding empty trailing invisible sands)
+        const imgData = ctx2d.getImageData(0, 0, w, h);
+        const pixels = new Uint32Array(imgData.data.buffer);
+        
+        for (let i = 0; i < pixels.length; i++) {
+            // Check alpha channel (little endian: A is top 8 bits). Empty space must be exactly 0.
+            if (((pixels[i] >> 24) & 0xFF) < 128) pixels[i] = 0; 
+        }
+
+        // 5. Initialize WebGPU
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999998;pointer-events:auto;user-select:none;touch-action:none;";
+        document.body.appendChild(canvas);
+
+        const context = canvas.getContext('webgpu');
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        context.configure({ device, format, alphaMode: 'premultiplied' });
+
+        // Hide original page content to sell the illusion
+        Array.from(document.body.children).forEach(child => {
+            if (child !== canvas && child.tagName !== 'SCRIPT') {
+                child.style.visibility = 'hidden';
+                child.style.opacity = '0';
+            }
+        });
+        document.body.style.background = '#111';
+
+        // 6. Data Buffers
+        const gridBuffer = device.createBuffer({
+            size: pixels.byteLength,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(gridBuffer, 0, pixels);
+
+        const uniformData = new Float32Array(12); // 48 bytes (aligned)
+        const uniformDataU32 = new Uint32Array(uniformData.buffer);
+        const uniformBuffer = device.createBuffer({
+            size: uniformData.byteLength,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        // 7. Shaders
+        const wgslUniforms = `
             struct Uniforms {
                 width: u32, height: u32, frame: u32, mouse_down: u32,
                 mouse_x: f32, mouse_y: f32, mouse_dx: f32, mouse_dy: f32,
                 mouse_btn: u32, mouse_radius: f32, pad1: u32, pad2: u32,
             };
-        `,p=s.createShaderModule({code:h+`
+        `;
+
+        const computeModule = device.createShaderModule({
+            code: wgslUniforms + `
             @group(0) @binding(0) var<storage, read_write> grid: array<atomic<u32>>;
             @group(0) @binding(1) var<uniform> u: Uniforms;
 
@@ -104,7 +200,11 @@
                         }
                     }
                 }
-            }`}),y=s.createShaderModule({code:h+`
+            }`
+        });
+
+        const renderModule = device.createShaderModule({
+            code: wgslUniforms + `
             @group(0) @binding(0) var<storage, read> grid: array<u32>;
             @group(0) @binding(1) var<uniform> u: Uniforms;
 
@@ -143,4 +243,104 @@
                 let a = f32((val >> 24u) & 0xFFu) / 255.0;
 
                 return vec4<f32>(r, g, b, a);
-            }`}),w=s.createComputePipeline({layout:"auto",compute:{module:p,entryPoint:"main"}}),b=s.createBindGroup({layout:w.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:f}},{binding:1,resource:{buffer:v}}]}),_=s.createRenderPipeline({layout:"auto",vertex:{module:y,entryPoint:"vs_main"},fragment:{module:y,entryPoint:"fs_main",targets:[{format:g}]},primitive:{topology:"triangle-list"}}),C=s.createBindGroup({layout:_.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:f}},{binding:1,resource:{buffer:v}}]}),E=0,L=0,P=0,S=0,k=0,F=0;$.addEventListener("mousedown",e=>{e.preventDefault(),k=1,F=e.button,E=e.clientX,L=e.clientY,P=0,S=0}),$.addEventListener("mouseup",()=>k=0),$.addEventListener("mousemove",e=>{P=e.clientX-E,S=e.clientY-L,E=e.clientX,L=e.clientY}),$.addEventListener("contextmenu",e=>e.preventDefault());let D=25;$.addEventListener("wheel",e=>{e.preventDefault(),(D-=.05*e.deltaY)<5&&(D=5),D>200&&(D=200)},{passive:!1});let B=0;function G(){B++,m[0]=t,m[1]=r,m[2]=B,m[3]=k,x[4]=E,x[5]=L,x[6]=P,x[7]=S,m[8]=F,x[9]=D,s.queue.writeBuffer(v,0,x);let e=s.createCommandEncoder(),i=e.beginComputePass();i.setPipeline(w),i.setBindGroup(0,b),i.dispatchWorkgroups(Math.ceil(t/16),Math.ceil(r/16)),i.end();let u=e.beginRenderPass({colorAttachments:[{view:c.getCurrentTexture().createView(),clearValue:{r:0,g:0,b:0,a:1},loadOp:"clear",storeOp:"store"}]});u.setPipeline(_),u.setBindGroup(0,C),u.draw(3),u.end(),s.queue.submit([e.finish()]),P=0,S=0,requestAnimationFrame(G)}requestAnimationFrame(G)}catch(O){alert("Falling Sand Setup Failed: "+O.message),console.error(O)}})();
+            }`
+        });
+
+        // 8. Pipelines & BindGroups
+        const computePipeline = device.createComputePipeline({
+            layout: 'auto', compute: { module: computeModule, entryPoint: 'main' }
+        });
+        const computeBindGroup = device.createBindGroup({
+            layout: computePipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: gridBuffer } },
+                { binding: 1, resource: { buffer: uniformBuffer } }
+            ]
+        });
+
+        const renderPipeline = device.createRenderPipeline({
+            layout: 'auto',
+            vertex: { module: renderModule, entryPoint: 'vs_main' },
+            fragment: { module: renderModule, entryPoint: 'fs_main', targets: [{ format }] },
+            primitive: { topology: 'triangle-list' }
+        });
+        const renderBindGroup = device.createBindGroup({
+            layout: renderPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: gridBuffer } },
+                { binding: 1, resource: { buffer: uniformBuffer } }
+            ]
+        });
+
+        // 9. Mouse Listeners
+        let mouseX = 0, mouseY = 0, mouseDx = 0, mouseDy = 0;
+        let mouseDown = 0, mouseBtn = 0;
+
+        canvas.addEventListener('mousedown', e => {
+            e.preventDefault();
+            mouseDown = 1; mouseBtn = e.button;
+            mouseX = e.clientX; mouseY = e.clientY;
+            mouseDx = 0; mouseDy = 0;
+        });
+        canvas.addEventListener('mouseup', () => mouseDown = 0);
+        canvas.addEventListener('mousemove', e => {
+            mouseDx = e.clientX - mouseX; mouseDy = e.clientY - mouseY;
+            mouseX = e.clientX; mouseY = e.clientY;
+        });
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        // 9b. Scroll Wheel for Brush Size
+        let brushRadius = 25.0;
+        canvas.addEventListener('wheel', e => {
+            e.preventDefault();
+            brushRadius -= e.deltaY * 0.05;
+            if (brushRadius < 5.0) brushRadius = 5.0;
+            if (brushRadius > 200.0) brushRadius = 200.0;
+        }, { passive: false });
+
+        // 10. Render Loop
+        let frame = 0;
+        function render() {
+            frame++;
+
+            // Sync uniforms to GPU
+            uniformDataU32[0] = w; uniformDataU32[1] = h; uniformDataU32[2] = frame; uniformDataU32[3] = mouseDown;
+            uniformData[4] = mouseX; uniformData[5] = mouseY; uniformData[6] = mouseDx; uniformData[7] = mouseDy;
+            uniformDataU32[8] = mouseBtn; uniformData[9] = brushRadius; // Brush Radius dynamically updated
+            device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+            const commandEncoder = device.createCommandEncoder();
+
+            // Run Physics Pass
+            const computePass = commandEncoder.beginComputePass();
+            computePass.setPipeline(computePipeline);
+            computePass.setBindGroup(0, computeBindGroup);
+            computePass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16));
+            computePass.end();
+
+            // Run Render Pass
+            const renderPass = commandEncoder.beginRenderPass({
+                colorAttachments: [{
+                    view: context.getCurrentTexture().createView(),
+                    clearValue: { r: 0, g: 0, b: 0, a: 1 },
+                    loadOp: 'clear', storeOp: 'store'
+                }]
+            });
+            renderPass.setPipeline(renderPipeline);
+            renderPass.setBindGroup(0, renderBindGroup);
+            renderPass.draw(3); // Draw full-screen triangle
+            renderPass.end();
+
+            device.queue.submit([commandEncoder.finish()]);
+
+            mouseDx = 0; mouseDy = 0; // Clear mouse delta
+            requestAnimationFrame(render);
+        }
+        
+        requestAnimationFrame(render);
+
+    } catch (err) {
+        alert("Falling Sand Setup Failed: " + err.message);
+        console.error(err);
+    }
+})();
