@@ -1,10 +1,10 @@
-(async()=>{try{if(!navigator.gpu){alert("WebGPU is not supported in this browser. Please use a compatible browser (like Chrome/Edge) and ensure WebGPU is enabled.");return}let e=document.createElement("div");e.innerText="Rasterizing DOM & Initializing Physics...",e.style.cssText="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.8);color:#fff;padding:20px 30px;border-radius:8px;z-index:9999999;font-family:sans-serif;font-weight:bold;",document.body.appendChild(e),await new Promise((e,i)=>{if(window.html2canvas)return e();let t=document.createElement("script");t.src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js",t.onload=e,t.onerror=()=>i(Error("Failed to load html2canvas")),document.head.appendChild(t)});let i=window.innerWidth,t=window.innerHeight,r=await html2canvas(document.body,{windowWidth:i,windowHeight:t,x:window.scrollX,y:window.scrollY,width:i,height:t,useCORS:!0,backgroundColor:null,scale:1}),a=r.getContext("2d",{willReadFrequently:!0}),u=a.getImageData(0,0,i,t),d=new Uint32Array(u.data.buffer);for(let o=0;o<d.length;o++)(d[o]>>24&255)<128&&(d[o]=0);let n=await navigator.gpu.requestAdapter(),l=await n.requestDevice(),s=document.createElement("canvas");s.width=i,s.height=t,s.style.cssText="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999998;pointer-events:auto;user-select:none;touch-action:none;",document.body.appendChild(s);let c=s.getContext("webgpu"),f=navigator.gpu.getPreferredCanvasFormat();c.configure({device:l,format:f,alphaMode:"premultiplied"}),Array.from(document.body.children).forEach(i=>{i!==s&&i!==e&&"SCRIPT"!==i.tagName&&(i.style.visibility="hidden",i.style.opacity="0")}),document.body.style.background="#111",e.remove();let g=l.createBuffer({size:d.byteLength,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});l.queue.writeBuffer(g,0,d);let $=new Float32Array(12),x=new Uint32Array($.buffer),m=l.createBuffer({size:$.byteLength,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST}),h=`
+(async()=>{try{if(!navigator.gpu){alert("WebGPU is not supported in this browser. Please use a compatible browser (like Chrome/Edge) and ensure WebGPU is enabled.");return}let e=await navigator.mediaDevices.getDisplayMedia({video:{preferCurrentTab:!0},audio:!1}),i=document.createElement("video");i.srcObject=e,i.play(),await new Promise(e=>{i.onplaying=e}),await new Promise(e=>setTimeout(e,150));let t=window.innerWidth,r=window.innerHeight,u=document.createElement("canvas");u.width=t,u.height=r;let a=u.getContext("2d",{willReadFrequently:!0});a.drawImage(i,0,0,t,r),e.getTracks().forEach(e=>e.stop());let d=a.getImageData(0,0,t,r),o=new Uint32Array(d.data.buffer);for(let n=0;n<o.length;n++)(o[n]>>24&255)<128&&(o[n]=0);let l=await navigator.gpu.requestAdapter(),s=await l.requestDevice(),$=document.createElement("canvas");$.width=t,$.height=r,$.style.cssText="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999998;pointer-events:auto;user-select:none;touch-action:none;",document.body.appendChild($);let c=$.getContext("webgpu"),g=navigator.gpu.getPreferredCanvasFormat();c.configure({device:s,format:g,alphaMode:"premultiplied"}),Array.from(document.body.children).forEach(e=>{e!==$&&"SCRIPT"!==e.tagName&&(e.style.visibility="hidden",e.style.opacity="0")}),document.body.style.background="#111";let f=s.createBuffer({size:o.byteLength,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});s.queue.writeBuffer(f,0,o);let x=new Float32Array(12),m=new Uint32Array(x.buffer),v=s.createBuffer({size:x.byteLength,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST}),h=`
             struct Uniforms {
                 width: u32, height: u32, frame: u32, mouse_down: u32,
                 mouse_x: f32, mouse_y: f32, mouse_dx: f32, mouse_dy: f32,
                 mouse_btn: u32, mouse_radius: f32, pad1: u32, pad2: u32,
             };
-        `,v=l.createShaderModule({code:h+`
+        `,p=s.createShaderModule({code:h+`
             @group(0) @binding(0) var<storage, read_write> grid: array<atomic<u32>>;
             @group(0) @binding(1) var<uniform> u: Uniforms;
 
@@ -21,12 +21,12 @@
                     let dx = f32(x) - u.mouse_x;
                     let dy = f32(y) - u.mouse_y;
                     if (dx*dx + dy*dy < u.mouse_radius * u.mouse_radius) {
-                        if (u.mouse_btn == 2u) {
-                            // Right click: Dig / Delete
+                        if (u.mouse_btn == 0u) {
+                            // Left click: Dig / Delete
                             atomicStore(&grid[idx], 0u);
                             return;
-                        } else if (u.mouse_btn == 0u) {
-                            // Left click: Grab & Move
+                        } else if (u.mouse_btn == 2u) {
+                            // Right click: Grab & Move
                             let val = atomicLoad(&grid[idx]);
                             if (val != 0u) {
                                 var tx_i = i32(x) + i32(u.mouse_dx);
@@ -104,7 +104,7 @@
                         }
                     }
                 }
-            }`}),p=l.createShaderModule({code:h+`
+            }`}),y=s.createShaderModule({code:h+`
             @group(0) @binding(0) var<storage, read> grid: array<u32>;
             @group(0) @binding(1) var<uniform> u: Uniforms;
 
@@ -143,4 +143,4 @@
                 let a = f32((val >> 24u) & 0xFFu) / 255.0;
 
                 return vec4<f32>(r, g, b, a);
-            }`}),y=l.createComputePipeline({layout:"auto",compute:{module:v,entryPoint:"main"}}),b=l.createBindGroup({layout:y.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:g}},{binding:1,resource:{buffer:m}}]}),w=l.createRenderPipeline({layout:"auto",vertex:{module:p,entryPoint:"vs_main"},fragment:{module:p,entryPoint:"fs_main",targets:[{format:f}]},primitive:{topology:"triangle-list"}}),_=l.createBindGroup({layout:w.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:g}},{binding:1,resource:{buffer:m}}]}),C=0,P=0,S=0,E=0,L=0,k=0;s.addEventListener("mousedown",e=>{e.preventDefault(),L=1,k=e.button,C=e.clientX,P=e.clientY,S=0,E=0}),s.addEventListener("mouseup",()=>L=0),s.addEventListener("mousemove",e=>{S=e.clientX-C,E=e.clientY-P,C=e.clientX,P=e.clientY}),s.addEventListener("contextmenu",e=>e.preventDefault());let F=0;function O(){F++,x[0]=i,x[1]=t,x[2]=F,x[3]=L,$[4]=C,$[5]=P,$[6]=S,$[7]=E,x[8]=k,$[9]=25,l.queue.writeBuffer(m,0,$);let e=l.createCommandEncoder(),r=e.beginComputePass();r.setPipeline(y),r.setBindGroup(0,b),r.dispatchWorkgroups(Math.ceil(i/16),Math.ceil(t/16)),r.end();let a=e.beginRenderPass({colorAttachments:[{view:c.getCurrentTexture().createView(),clearValue:{r:0,g:0,b:0,a:1},loadOp:"clear",storeOp:"store"}]});a.setPipeline(w),a.setBindGroup(0,_),a.draw(3),a.end(),l.queue.submit([e.finish()]),S=0,E=0,requestAnimationFrame(O)}requestAnimationFrame(O)}catch(B){alert("Falling Sand Setup Failed: "+B.message),console.error(B)}})();
+            }`}),w=s.createComputePipeline({layout:"auto",compute:{module:p,entryPoint:"main"}}),b=s.createBindGroup({layout:w.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:f}},{binding:1,resource:{buffer:v}}]}),_=s.createRenderPipeline({layout:"auto",vertex:{module:y,entryPoint:"vs_main"},fragment:{module:y,entryPoint:"fs_main",targets:[{format:g}]},primitive:{topology:"triangle-list"}}),C=s.createBindGroup({layout:_.getBindGroupLayout(0),entries:[{binding:0,resource:{buffer:f}},{binding:1,resource:{buffer:v}}]}),E=0,L=0,P=0,S=0,k=0,F=0;$.addEventListener("mousedown",e=>{e.preventDefault(),k=1,F=e.button,E=e.clientX,L=e.clientY,P=0,S=0}),$.addEventListener("mouseup",()=>k=0),$.addEventListener("mousemove",e=>{P=e.clientX-E,S=e.clientY-L,E=e.clientX,L=e.clientY}),$.addEventListener("contextmenu",e=>e.preventDefault());let D=25;$.addEventListener("wheel",e=>{e.preventDefault(),(D-=.05*e.deltaY)<5&&(D=5),D>200&&(D=200)},{passive:!1});let B=0;function G(){B++,m[0]=t,m[1]=r,m[2]=B,m[3]=k,x[4]=E,x[5]=L,x[6]=P,x[7]=S,m[8]=F,x[9]=D,s.queue.writeBuffer(v,0,x);let e=s.createCommandEncoder(),i=e.beginComputePass();i.setPipeline(w),i.setBindGroup(0,b),i.dispatchWorkgroups(Math.ceil(t/16),Math.ceil(r/16)),i.end();let u=e.beginRenderPass({colorAttachments:[{view:c.getCurrentTexture().createView(),clearValue:{r:0,g:0,b:0,a:1},loadOp:"clear",storeOp:"store"}]});u.setPipeline(_),u.setBindGroup(0,C),u.draw(3),u.end(),s.queue.submit([e.finish()]),P=0,S=0,requestAnimationFrame(G)}requestAnimationFrame(G)}catch(O){alert("Falling Sand Setup Failed: "+O.message),console.error(O)}})();
